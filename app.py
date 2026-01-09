@@ -4,11 +4,55 @@ import pandas as pd
 from logic import process_reconciliation
 import io
 
-st.set_page_config(page_title="Conciliador de Cheques", layout="wide")
+st.set_page_config(
+    page_title="Tuchi | Conciliador de Cheques",
+    page_icon="🏦",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.title("🏦 Conciliación Automática de Cheques")
+# --- Custom CSS ---
 st.markdown("""
-Esta herramienta cruza los datos del **Libro** (Tu sistema) con el **Extracto Bancario** (Galicia) utilizando los números de cheques.
+<style>
+    .main {
+        background-color: #f8f9fa;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 10px;
+        height: 3em;
+        background-color: #2e7d32;
+        color: white;
+        font-weight: bold;
+        border: none;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #1b5e20;
+        border: none;
+        color: white;
+    }
+    .metric-card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border: 1px solid #eee;
+    }
+    h1, h2, h3 {
+        color: #1e3d59;
+    }
+    .stInfo {
+        background-color: #e3f2fd;
+        border-color: #2196f3;
+        color: #0d47a1;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🏦 Tuchi: Conciliación Automática")
+st.markdown("""
+Esta herramienta cruza los datos del **Libro** con el **Extracto Bancario** utilizando los números de cheques.
 """)
 
 col1, col2 = st.columns(2)

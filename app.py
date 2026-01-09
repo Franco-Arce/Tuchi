@@ -55,15 +55,70 @@ st.markdown("""
 Esta herramienta cruza los datos del **Libro** con el **Extracto Bancario** utilizando los números de cheques.
 """)
 
+# --- Sidebar Instructions ---
+with st.sidebar:
+    st.image("https://img.icons8.com/fluency/96/000000/bank.png", width=80)
+    st.title("Instrucciones")
+    st.info("""
+    1. **Sube el Libro**: El Excel de tu sistema con los cheques entre paréntesis, ej: `(123456)`.
+    2. **Sube el Extracto**: El Excel del banco (Galicia).
+    3. **Previsualiza**: Asegúrate de que los datos se lean correctamente.
+    4. **Procesa**: Cruza la información y descarga el reporte.
+    """)
+    
+    st.divider()
+    st.subheader("📥 ¿No tienes el formato?")
+    
+    # Simple template generator
+    template_data = io.BytesIO()
+    with pd.ExcelWriter(template_data, engine='xlsxwriter') as writer:
+        # Sample Libro
+        pd.DataFrame({
+            'Fecha Pago ': ['2026-01-01'],
+            'Concepto': ['Cheques de terceros (123)(456)'],
+            'Ingreso': ['1.000,00']
+        }).to_excel(writer, sheet_name='Libro', index=False, startrow=1)
+        # Sample Extracto
+        pd.DataFrame({
+            'Fecha': ['2026-01-02', '2026-01-02'],
+            'Numero de Comprobante': [123, 456],
+            'Creditos': [400, 600],
+            'Descripcion': ['Deposito cheque', 'Deposito cheque']
+        }).to_excel(writer, sheet_name='Banco', index=False)
+    template_data.seek(0)
+    
+    st.download_button(
+        "Descargar Plantilla de Ejemplo",
+        data=template_data,
+        file_name="Plantilla_Tuchi.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. Subir 'Libro' (Excel)")
     libro_file = st.file_uploader("Cargar archivo del Libro", type=["xlsx", "xls"], key="libro")
+    if libro_file:
+        try:
+            # Quick preview
+            df_preview = pd.read_excel(libro_file, header=1, nrows=3)
+            st.caption("Vista previa del Libro:")
+            st.dataframe(df_preview, use_container_width=True)
+        except Exception:
+            st.error("Error al leer la vista previa del Libro.")
 
 with col2:
     st.subheader("2. Subir 'Extracto' (Excel)")
     extracto_file = st.file_uploader("Cargar archivo del Banco", type=["xlsx", "xls"], key="extracto")
+    if extracto_file:
+        try:
+            # Quick preview
+            df_preview_b = pd.read_excel(extracto_file, nrows=3)
+            st.caption("Vista previa del Extracto:")
+            st.dataframe(df_preview_b, use_container_width=True)
+        except Exception:
+            st.error("Error al leer la vista previa del Banco.")
 
 if libro_file and extracto_file:
     if st.button("🔄 Ejecutar Conciliación"):

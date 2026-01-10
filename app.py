@@ -5,7 +5,7 @@ from logic import process_reconciliation
 import io
 
 st.set_page_config(
-    page_title="Tuchi | Conciliador de Cheques",
+    page_title="Conciliación Bancaria",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -50,9 +50,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏦 Tuchi: Conciliación Automática")
+st.title("🏦 Conciliación Bancaria Automática")
 st.markdown("""
-Esta herramienta cruza los datos del **Libro** con el **Extracto Bancario** utilizando los números de cheques.
+Esta herramienta realiza la **conciliación bancaria** completa, identificando diferencias **temporales** y **permanentes** 
+entre el saldo del Libro y el saldo del Extracto Bancario.
 """)
 
 # --- Sidebar Instructions ---
@@ -60,48 +61,43 @@ with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/000000/bank.png", width=80)
     st.title("Instrucciones")
     st.info("""
-    1. **Sube el Libro**: El Excel de tu sistema con los cheques entre paréntesis, ej: `(123456)`.
-    2. **Sube el Extracto**: El Excel del banco (Galicia).
-    3. **Previsualiza**: Asegúrate de que los datos se lean correctamente.
-    4. **Procesa**: Cruza la información y descarga el reporte.
+    1. **Sube el Libro**: Excel de tu sistema contable con las transacciones registradas.
+    2. **Sube el Extracto**: Excel del banco con los movimientos bancarios.
+    3. **Procesa**: El sistema identificará:
+       - ✅ **Items que coinciden**
+       - 🕐 **Diferencias Temporales** (depósitos en tránsito, cheques pendientes)
+       - ⚠️ **Diferencias Permanentes** (comisiones, impuestos, errores)
+    4. **Descarga**: Obtén el reporte de conciliación completo.
     """)
     
     st.divider()
-    st.subheader("📥 ¿No tienes el formato?")
+    st.subheader("📚 ¿Qué son las diferencias?")
     
-    # Simple template generator
-    template_data = io.BytesIO()
-    with pd.ExcelWriter(template_data, engine='xlsxwriter') as writer:
-        # Sample Libro
-        pd.DataFrame({
-            'Fecha Pago ': ['2026-01-01'],
-            'Concepto': ['Cheques de terceros (123)(456)'],
-            'Ingreso': ['1.000,00']
-        }).to_excel(writer, sheet_name='Libro', index=False, startrow=1)
-        # Sample Extracto
-        pd.DataFrame({
-            'Fecha': ['2026-01-02', '2026-01-02'],
-            'Numero de Comprobante': [123, 456],
-            'Creditos': [400, 600],
-            'Descripcion': ['Deposito cheque', 'Deposito cheque']
-        }).to_excel(writer, sheet_name='Banco', index=False)
-    template_data.seek(0)
+    with st.expander("🕐 Diferencias Temporales"):
+        st.markdown("""
+        Se ajustan con el paso del tiempo **sin necesidad de asiento contable**:
+        - Depósitos en tránsito
+        - Cheques pendientes de acreditación
+        - Pagos registrados en diferentes períodos
+        """)
     
-    st.download_button(
-        "Descargar Plantilla de Ejemplo",
-        data=template_data,
-        file_name="Plantilla_Tuchi.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    with st.expander("⚠️ Diferencias Permanentes"):
+        st.markdown("""
+        Requieren **ajuste contable** por errores u omisiones:
+        - Comisiones bancarias
+        - Impuestos y percepciones
+        - Cheques rechazados no registrados
+        - Débitos automáticos
+        - Acreditaciones mal cargadas
+        """)
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("1. Subir 'Libro' (Excel)")
+    st.subheader("1. Subir 'Libro Banco' (Excel)")
     libro_file = st.file_uploader("Cargar archivo del Libro", type=["xlsx", "xls"], key="libro")
     if libro_file:
         try:
-            # Quick preview
             df_preview = pd.read_excel(libro_file, header=1, nrows=3)
             st.caption("Vista previa del Libro:")
             st.dataframe(df_preview, use_container_width=True)
@@ -109,11 +105,10 @@ with col1:
             st.error("Error al leer la vista previa del Libro.")
 
 with col2:
-    st.subheader("2. Subir 'Extracto' (Excel)")
+    st.subheader("2. Subir 'Extracto Bancario' (Excel)")
     extracto_file = st.file_uploader("Cargar archivo del Banco", type=["xlsx", "xls"], key="extracto")
     if extracto_file:
         try:
-            # Quick preview
             df_preview_b = pd.read_excel(extracto_file, nrows=3)
             st.caption("Vista previa del Extracto:")
             st.dataframe(df_preview_b, use_container_width=True)
@@ -121,53 +116,121 @@ with col2:
             st.error("Error al leer la vista previa del Banco.")
 
 if libro_file and extracto_file:
-    if st.button("🔄 Ejecutar Conciliación"):
-        with st.spinner("Procesando archivos y buscando coincidencias..."):
+    if st.button("🔄 Ejecutar Conciliación Bancaria"):
+        with st.spinner("Procesando conciliación bancaria..."):
             try:
-                # Process only if files are uploaded
                 output_excel, summary = process_reconciliation(libro_file, extracto_file)
                 
-                st.success("✅ ¡Proceso completado!")
+                st.success("✅ ¡Conciliación completada!")
                 
-                # --- Show Explanations & Stats ---
+                # --- Show Summary ---
                 st.divider()
-                st.header("📊 Resumen del Análisis")
+                st.header("📊 Resumen de Conciliación")
                 
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Registros en Libro Procesados", summary['total_registros_procesados'])
-                m2.metric("Con Cheques Identificados", summary['registros_con_cheques'])
-                m3.metric("Conciliados Exitosamente", summary['registros_conciliados_ok'])
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    st.metric(
+                        "💰 Saldo Final Banco", 
+                        f"${summary['saldo_final_banco']:,.2f}",
+                        help="Saldo según extracto bancario"
+                    )
+                with col_b:
+                    st.metric(
+                        "📚 Saldo Final Libro", 
+                        f"${summary['saldo_final_libro']:,.2f}",
+                        help="Saldo según registros contables"
+                    )
+                with col_c:
+                    diferencia = summary['diferencia_total']
+                    st.metric(
+                        "📊 Diferencia Total", 
+                        f"${abs(diferencia):,.2f}",
+                        delta=f"{'Faltante' if diferencia < 0 else 'Excedente'}",
+                        delta_color="inverse" if diferencia < 0 else "normal",
+                        help="Diferencia entre Libro y Banco"
+                    )
                 
                 st.divider()
+                
+                # --- Categories Breakdown ---
+                st.subheader("🔍 Análisis de Diferencias")
+                
+                col_x, col_y, col_z = st.columns(3)
+                
+                with col_x:
+                    st.metric(
+                        "✅ Items Coincidentes",
+                        summary['items_coinciden'],
+                        help="Transacciones que coinciden en ambos registros"
+                    )
+                
+                with col_y:
+                    st.metric(
+                        "🕐 Diferencias Temporales",
+                        summary['diferencias_temporales_count'],
+                        f"${summary['diferencias_temporales_monto']:,.2f}",
+                        help="Se ajustan sin asiento contable"
+                    )
+                
+                with col_z:
+                    st.metric(
+                        "⚠️ Diferencias Permanentes",
+                        summary['diferencias_permanentes_count'],
+                        f"${summary['diferencias_permanentes_monto']:,.2f}",
+                        help="Requieren ajuste contable"
+                    )
+                
+                st.divider()
+                
+                # --- Explanation ---
                 st.subheader("💡 ¿Qué se hizo?")
                 st.info(f"""
-                1. **Lectura**: Se procesaron **{summary['total_registros_procesados']}** líneas del Libro.
-                2. **Extracción**: Se detectaron grupos de cheques en **{summary['registros_con_cheques']}** registros utilizando los números entre paréntesis `(xxxx)`.
-                3. **Cruce**: Cada cheque individual fue buscado en el Extracto Bancario.
-                4. **Validación**: Se sumaron los montos del banco para cada grupo y se compararon con tu registro original.
-                   - **{summary['registros_conciliados_ok']}** registros coincidieron exactamente (o con diferencia < $1).
-                   - Monto Total Analizado: **${summary['monto_total_libro_analizado']:,.2f}**
-                   - Monto Total Conciliado: **${summary['monto_total_conciliado']:,.2f}**
+                **Proceso de Conciliación:**
+                
+                1. **Coincidencias**: Se identificaron **{summary['items_coinciden']}** transacciones que coinciden en ambos registros 
+                   (principalmente cheques con números coincidentes).
+                
+                2. **Diferencias Temporales** ({summary['diferencias_temporales_count']} items):
+                   - Depósitos en tránsito (registrados en Libro, aún no acreditados por el Banco)
+                   - Cheques pendientes de presentación
+                   - **Ajuste**: Sin necesidad de asiento contable, se regularán con el tiempo
+                
+                3. **Diferencias Permanentes** ({summary['diferencias_permanentes_count']} items):
+                   - Comisiones bancarias, impuestos, débitos automáticos
+                   - Acreditaciones u omisiones de registro
+                   - **Ajuste**: Requieren asiento contable para corregir
+                
+                4. **Resultado**: La diferencia total de **${abs(summary['diferencia_total']):,.2f}** se explica por la suma 
+                   de diferencias temporales y permanentes.
                 """)
                 
-                if summary['diferencia_global'] != 0:
-                    st.warning(f"⚠️ Existe una diferencia global no conciliada de: ${summary['diferencia_global']:,.2f}")
+                if abs(summary['diferencia_total']) < 1.0:
+                    st.success("✨ ¡Perfecta conciliación! La diferencia es menor a $1.00")
+                elif abs(summary['diferencia_total']) > 10000:
+                    st.warning("⚠️ Diferencia significativa detectada. Revisa el detalle en el reporte Excel.")
                 
                 # --- Download Button ---
-                st.subheader("📥 Descargar Resultados")
-                st.markdown("Descarga el Excel con el detalle fila por fila, incluyendo las columnas 'Estado' y 'Diferencia'.")
+                st.divider()
+                st.subheader("📥 Descargar Reporte")
+                st.markdown("""
+                El Excel incluye:
+                - **Conciliación Bancaria**: Estado de conciliación con saldos acumulados
+                - **Items Coincidentes**: Transacciones que coinciden
+                - **Diferencias Temporales**: Detalle de ajustes sin asiento contable
+                - **Diferencias Permanentes**: Detalle de ajustes con asiento contable
+                - **Resumen**: Métricas y totales
+                """)
                 
                 st.download_button(
-                    label="Descargar Reporte Completo (XLSX)",
+                    label="📊 Descargar Reporte Completo (XLSX)",
                     data=output_excel,
-                    file_name="Resultado_Conciliacion.xlsx",
+                    file_name="Conciliacion_Bancaria.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
             except Exception as e:
-                st.error(f"❌ Ocurrió un error :/: {e}")
+                st.error(f"❌ Error durante la conciliación: {e}")
                 st.exception(e)
 
 else:
-    st.info("👆 Por favor sube ambos archivos para comenzar.")
-
+    st.info("👆 Por favor sube ambos archivos para comenzar la conciliación bancaria.")

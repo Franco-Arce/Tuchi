@@ -872,6 +872,11 @@ def process_reconciliation(libro_file, extracto_file):
                 'num_format': '$ #,##0.00',
                 'font_size': 8
             })
+            date_fmt_small = workbook.add_format({
+                'border': 1,
+                'font_size': 8,
+                'num_format': 'DD/MM/YYYY'
+            })
             
             # Apply header format
             for col_num, value in enumerate(matched_items[cols_matched].columns.values):
@@ -879,11 +884,14 @@ def process_reconciliation(libro_file, extracto_file):
             
             # Auto-fit columns
             for i, col in enumerate(cols_matched):
-                max_len = max(
-                    matched_items[col].astype(str).map(len).max(),
-                    len(str(col))
-                ) + 2
-                ws_matched.set_column(i, i, min(max_len, 50))
+                if 'Fecha' in col:
+                    ws_matched.set_column(i, i, 12)
+                else:
+                    max_len = max(
+                        matched_items[col].astype(str).map(len).max(),
+                        len(str(col))
+                    ) + 2
+                    ws_matched.set_column(i, i, min(max_len, 50))
             
             
             # Apply data format - use filtered dataframe
@@ -891,14 +899,17 @@ def process_reconciliation(libro_file, extracto_file):
             for row in range(1, len(matched_filtered) + 1):
                 for col in range(len(cols_matched)):
                     val = matched_filtered.iloc[row-1, col]
+                    col_name = cols_matched[col]
                     # Handle list values (convert to string) - check first to avoid isna errors
                     if isinstance(val, (list, tuple)):
                         ws_matched.write(row, col, ', '.join(str(v) for v in val), data_fmt)
                     # Handle NaN values
                     elif pd.isna(val):
                         ws_matched.write(row, col, '', data_fmt)
-                    elif 'Monto' in cols_matched[col]:
+                    elif 'Monto' in col_name:
                         ws_matched.write(row, col, val, money_fmt_small)
+                    elif 'Fecha' in col_name:
+                        ws_matched.write(row, col, val, date_fmt_small)
                     else:
                         ws_matched.write(row, col, val, data_fmt)
             
@@ -950,6 +961,12 @@ def process_reconciliation(libro_file, extracto_file):
                 'num_format': '$ #,##0.00',
                 'font_size': 8
             })
+            date_temp_fmt = workbook.add_format({
+                'border': 1,
+                'bg_color': '#E2EFDA',
+                'font_size': 8,
+                'num_format': 'DD/MM/YYYY'
+            })
             
             # Apply header
             for col_num, value in enumerate(df_temp.columns.values):
@@ -961,6 +978,8 @@ def process_reconciliation(libro_file, extracto_file):
                     ws_temp.set_column(i, i, 60)
                 elif col == 'Monto_Libro':
                     ws_temp.set_column(i, i, 15)
+                elif 'Fecha' in col:
+                    ws_temp.set_column(i, i, 12)
                 else:
                     max_len = max(df_temp[col].astype(str).map(len).max(), len(str(col))) + 2
                     ws_temp.set_column(i, i, min(max_len, 25))
@@ -974,6 +993,8 @@ def process_reconciliation(libro_file, extracto_file):
                         ws_temp.write(row + 1, col, '', data_temp_fmt)
                     elif col_name == 'Monto_Libro':
                         ws_temp.write(row + 1, col, val, money_temp_fmt)
+                    elif 'Fecha' in col_name:
+                        ws_temp.write(row + 1, col, val, date_temp_fmt)
                     else:
                         ws_temp.write(row + 1, col, val, data_temp_fmt)
             
@@ -1012,6 +1033,12 @@ def process_reconciliation(libro_file, extracto_file):
                 'num_format': '$ #,##0.00',
                 'font_size': 8
             })
+            date_perm_fmt = workbook.add_format({
+                'border': 1,
+                'bg_color': '#FCE4D6',
+                'font_size': 8,
+                'num_format': 'DD/MM/YYYY'
+            })
             
             # Apply header
             for col_num, value in enumerate(df_perm.columns.values):
@@ -1023,6 +1050,8 @@ def process_reconciliation(libro_file, extracto_file):
                     ws_perm.set_column(i, i, 60)
                 elif col == 'Monto_Banco':
                     ws_perm.set_column(i, i, 15)
+                elif col == 'Fecha':
+                    ws_perm.set_column(i, i, 12)
                 else:
                     max_len = max(df_perm[col].astype(str).map(len).max(), len(str(col))) + 2
                     ws_perm.set_column(i, i, min(max_len, 25))
@@ -1036,6 +1065,8 @@ def process_reconciliation(libro_file, extracto_file):
                         ws_perm.write(row + 1, col, '', data_perm_fmt)
                     elif col_name == 'Monto_Banco':
                         ws_perm.write(row + 1, col, val, money_perm_fmt)
+                    elif col_name == 'Fecha':
+                        ws_perm.write(row + 1, col, val, date_perm_fmt)
                     else:
                         ws_perm.write(row + 1, col, val, data_perm_fmt)
             
@@ -1043,8 +1074,24 @@ def process_reconciliation(libro_file, extracto_file):
             ws_perm.set_zoom(110)
         
         # === SHEET 5: SUMMARY ===
+        # Agregar descripciones para cada métrica
+        descripciones = {
+            "saldo_final_banco": "Último saldo del extracto bancario (fin de período)",
+            "saldo_final_libro": "Suma neta de movimientos registrados en el libro contable",
+            "diferencia_total": "Diferencia entre el libro y el banco (debe explicarse)",
+            "items_coinciden": "Total de transacciones que matchearon entre libro y banco",
+            "matches_cheque": "Matches identificados por número de cheque (alta confianza)",
+            "matches_cuit": "Matches por CUIT + Monto + Fecha (alta confianza)",
+            "matches_fuzzy": "Matches solo por Monto + Fecha (revisar casos dudosos)",
+            "diferencias_temporales_count": "Items que se resolverán en el próximo período",
+            "diferencias_permanentes_count": "Items que requieren asiento contable",
+            "diferencias_temporales_monto": "Monto total de diferencias temporales",
+            "diferencias_permanentes_monto": "Monto total de diferencias permanentes"
+        }
+        
         summary_df = pd.DataFrame([summary]).T.reset_index()
         summary_df.columns = ['Métrica', 'Valor']
+        summary_df['Descripción'] = summary_df['Métrica'].map(descripciones)
         summary_df.to_excel(writer, sheet_name='Resumen', index=False)
         
         # Format Sheet 5
@@ -1073,19 +1120,28 @@ def process_reconciliation(libro_file, extracto_file):
             'font_size': 9,
             'align': 'right'
         })
+        desc_fmt = workbook.add_format({
+            'border': 1,
+            'font_size': 9,
+            'font_color': '#666666',
+            'text_wrap': True
+        })
         
         # Apply header
         ws_summary.write(0, 0, 'Métrica', header_summary_fmt)
         ws_summary.write(0, 1, 'Valor', header_summary_fmt)
+        ws_summary.write(0, 2, 'Descripción', header_summary_fmt)
         
         # Set column widths
         ws_summary.set_column(0, 0, 35)
         ws_summary.set_column(1, 1, 20)
+        ws_summary.set_column(2, 2, 50)
         
         # Apply data format
         for row in range(len(summary_df)):
             ws_summary.write(row + 1, 0, summary_df.iloc[row, 0], metric_fmt)
             ws_summary.write(row + 1, 1, summary_df.iloc[row, 1], value_fmt)
+            ws_summary.write(row + 1, 2, summary_df.iloc[row, 2], desc_fmt)
         
         ws_summary.freeze_panes(1, 0)
         ws_summary.set_zoom(110)

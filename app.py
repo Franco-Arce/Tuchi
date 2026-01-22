@@ -187,8 +187,10 @@ if libro_file and extracto_file:
                 st.info(f"""
                 **Proceso de Conciliación:**
                 
-                1. **Coincidencias**: Se identificaron **{summary['items_coinciden']}** transacciones que coinciden en ambos registros 
-                   (principalmente cheques con números coincidentes).
+                1. **Coincidencias**: Se identificaron **{summary['items_coinciden']}** transacciones que coinciden en ambos registros:
+                   - 🧾 **Por Cheque**: {summary.get('matches_cheque', 0)} items
+                   - 🆔 **Por CUIT + Monto**: {summary.get('matches_cuit', 0)} items
+                   - 🗓️ **Por Monto + Fecha**: {summary.get('matches_fuzzy', 0)} items
                 
                 2. **Diferencias Temporales** ({summary['diferencias_temporales_count']} items):
                    - Depósitos en tránsito (registrados en Libro, aún no acreditados por el Banco)

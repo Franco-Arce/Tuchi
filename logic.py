@@ -21,6 +21,24 @@ def clean_amount(val):
             return 0.0
     return 0.0
 
+
+def clean_cuit(val):
+    """
+    Cleans CUIT/CUIL strings.
+    Removes hyphens, spaces, and non-numeric characters.
+    Returns string of digits or None if invalid.
+    """
+    if pd.isna(val):
+        return None
+    val = str(val)
+    # Remove . , - and spaces
+    val_clean = re.sub(r'[^\d]', '', val)
+    
+    # Typical CUIT length is 11, but we'll accept valid numeric strings
+    if len(val_clean) > 5:
+        return val_clean
+    return None
+
 def extract_check_numbers(text):
     """
     Extracts all sequences of digits inside parentheses from the text.
@@ -31,6 +49,7 @@ def extract_check_numbers(text):
     # Regex to find digits inside ()
     matches = re.findall(r'\((\d+)\)', text)
     return matches
+
 
 def categorize_difference(row, source='extracto'):
     """
@@ -134,6 +153,7 @@ def load_data(libro_file, extracto_file):
     
     # Rename columns to avoid encoding issues
     col_map = {}
+
     for col in df_extracto.columns:
         col_lower = str(col).lower()
         if 'créditos' in col_lower or 'creditos' in col_lower or 'crditos' in col_lower:
@@ -148,6 +168,10 @@ def load_data(libro_file, extracto_file):
             col_map[col] = 'Descripcion'
         elif 'saldo' in col_lower:
             col_map[col] = 'Saldo'
+        elif 'leyenda adicional2' in col_lower or 'leyenda adicional 2' in col_lower:
+            col_map[col] = 'CUIT'
+        elif 'cuit' in col_lower: # Fallback if standard name
+            col_map[col] = 'CUIT'
               
     df_extracto.rename(columns=col_map, inplace=True)
     
@@ -166,6 +190,25 @@ def load_data(libro_file, extracto_file):
     df_extracto['Monto_Banco'] = df_extracto['Creditos_Clean'] - df_extracto['Debitos_Clean']
     
     df_extracto['Fecha'] = pd.to_datetime(df_extracto['Fecha'], errors='coerce')
+
+    # Clean CUIT in Extracto match
+    if 'CUIT' in df_extracto.columns:
+        df_extracto['CUIT_Clean'] = df_extracto['CUIT'].apply(clean_cuit)
+    else:
+        df_extracto['CUIT_Clean'] = None
+        
+    # Attempt to find CUIT in Libro
+    # Standardize Libro CUIT column if exists
+    cuit_col_libro = None
+    for col in df_libro.columns:
+        if 'cuit' in str(col).lower() or 'id. tributario' in str(col).lower():
+            cuit_col_libro = col
+            break
+            
+    if cuit_col_libro:
+        df_libro['CUIT_Clean'] = df_libro[cuit_col_libro].apply(clean_cuit)
+    else:
+        df_libro['CUIT_Clean'] = None
     
     return df_libro, df_extracto
 
@@ -182,47 +225,141 @@ def process_reconciliation(libro_file, extracto_file):
     df_libro['Libro_ID'] = df_libro.index
     df_extracto['Banco_ID'] = df_extracto.index
     
-    # --- Extract check numbers ---
+
+    # --- Step 1: Matching by Check Numbers (Exact) ---
     df_libro['Cheques_Extraidos'] = df_libro['Concepto'].apply(extract_check_numbers)
-    
-    # --- Explode libro for matching ---
     df_exploded = df_libro.explode('Cheques_Extraidos')
     df_exploded['check_match_id'] = df_exploded['Cheques_Extraidos'].astype(str).str.strip()
     df_extracto['check_match_id'] = df_extracto['Numero de Comprobante'].astype(str).str.strip()
     
-    # --- Matching ---
-    # First, match by check numbers
-    merged = pd.merge(
-        df_exploded,
-        df_extracto,
-        on='check_match_id',
-        how='outer',
-        indicator=True,
-        suffixes=('_L', '_B')
-    )
+    matches_data = [] # To store match details
+    libro_matched_ids = set()
+    banco_matched_ids = set()
     
-    # Mark matched items
-    merged['Matched'] = merged['_merge'] == 'both'
+    # Filter valid checks (>3 chars) to avoid noise
+    valid_checks_L = df_exploded[df_exploded['check_match_id'].str.len() > 3]
+    valid_checks_B = df_extracto[df_extracto['check_match_id'].str.len() > 3]
     
-    # --- Categorize unmatched items from Extracto ---
-    extracto_unmatched = df_extracto[~df_extracto['Banco_ID'].isin(
-        merged[merged['Matched']]['Banco_ID'].dropna()
-    )].copy()
+    check_matches_df = pd.merge(valid_checks_L, valid_checks_B, on='check_match_id', suffixes=('_L', '_B'))
     
-    # Apply categorization
+    for _, row in check_matches_df.iterrows():
+        l_id = row['Libro_ID']
+        b_id = row['Banco_ID']
+        if l_id not in libro_matched_ids and b_id not in banco_matched_ids:
+            libro_matched_ids.add(l_id)
+            banco_matched_ids.add(b_id)
+            matches_data.append({
+                'Libro_ID': l_id,
+                'Banco_ID': b_id,
+                'Method': 'Cheque',
+                'check_match_id': row['check_match_id']
+            })
+
+    # --- Helper to get unmatched rows ---
+    def get_unmatched(df, id_col, matched_set):
+        return df[~df[id_col].isin(matched_set)].copy()
+
+    # --- Step 2 & 3: Fuzzy Matching (CUIT / Date) ---
+    # Loop through remaining Libro items
+    candidates_L = get_unmatched(df_libro, 'Libro_ID', libro_matched_ids)
+    
+    # Pre-filter Extracto to avoid repeated filtering inside loop (optimization)
+    all_candidates_B = get_unmatched(df_extracto, 'Banco_ID', banco_matched_ids)
+    
+    # We iterate over a copy to avoid index issues
+    for _, row_L in candidates_L.iterrows():
+        # Check if already matched (in case of duplicate handling, though logic usually claims exclusive)
+        if row_L['Libro_ID'] in libro_matched_ids:
+            continue
+            
+        monto_L = row_L['Monto_Libro']
+        date_L = row_L['Fecha Pago ']
+        cuit_L = row_L.get('CUIT_Clean')
+        
+        # Filter unmatched B candidates dynamically
+        # Improve performance: match on Amount first (exact matching for float might need tolerance)
+        # Using 0.01 tolerance
+        potential_matches = all_candidates_B[
+            (~all_candidates_B['Banco_ID'].isin(banco_matched_ids)) &
+            (abs(all_candidates_B['Monto_Banco'] - monto_L) < 0.01)
+        ].copy()
+        
+        if potential_matches.empty:
+            continue
+            
+        # Calculate date diff (absolute days)
+        # Ensure dates are valid
+        if pd.isna(date_L):
+            continue
+            
+        potential_matches['date_diff'] = (potential_matches['Fecha'] - date_L).dt.days.abs()
+        
+        # Filter by Date Range (User request: range of days. Using +/- 5 days)
+        # Note: could be configurable
+        # Tolerancia de 15 días para cubrir demoras en comprobantes
+        valid_date_matches = potential_matches[potential_matches['date_diff'] <= 15]
+        
+        if valid_date_matches.empty:
+            continue
+            
+        match_found = None
+        method = None
+        
+        # PRIORITY 1: CUIT Match
+        if cuit_L:
+            cuit_matches = valid_date_matches[valid_date_matches['CUIT_Clean'] == cuit_L]
+            if not cuit_matches.empty:
+                # Pick closest date
+                match_found = cuit_matches.sort_values('date_diff').iloc[0]
+                method = 'Monto+CUIT+Fecha'
+        
+        # PRIORITY 2: Just Date Match (if no CUIT match found)
+        if match_found is None:
+             # Pick closest date
+             match_found = valid_date_matches.sort_values('date_diff').iloc[0]
+             method = 'Monto+Fecha'
+             
+        if match_found is not None:
+            b_id = match_found['Banco_ID']
+            libro_matched_ids.add(row_L['Libro_ID'])
+            banco_matched_ids.add(b_id)
+            matches_data.append({
+                'Libro_ID': row_L['Libro_ID'],
+                'Banco_ID': b_id,
+                'Method': method,
+                'check_match_id': row_L.get('Cheques_Extraidos', '') # Store check info if present even if not used for match
+            })
+
+    # --- Reconstruct Results ---
+    
+    # 1. Merged DataFrame (Matched Items)
+    if matches_data:
+        df_matches = pd.DataFrame(matches_data)
+        # Javascript-like merge: join metadata
+        merged = pd.merge(df_matches, df_libro, on='Libro_ID')
+        # check_match_id conflict resolution
+        merged = pd.merge(merged, df_extracto, on='Banco_ID', suffixes=('_L', '_B'))
+        
+        # Restore check_match_id from Left (Matches) as main column
+        if 'check_match_id_L' in merged.columns:
+            merged.rename(columns={'check_match_id_L': 'check_match_id'}, inplace=True)
+            
+        merged['Matched'] = True
+    else:
+        # Empty schema
+        merged = pd.DataFrame(columns=['Libro_ID', 'Banco_ID', 'Matched', 'check_match_id', 'Method'] + list(df_libro.columns) + list(df_extracto.columns))
+    
+    # 2. Unmatched DataFrames
+    extracto_unmatched = get_unmatched(df_extracto, 'Banco_ID', banco_matched_ids)
     extracto_unmatched['Categoria'] = extracto_unmatched.apply(
-        lambda row: categorize_difference(row, source='extracto'),
-        axis=1
+        lambda row: categorize_difference(row, source='extracto'), axis=1
     )
     
-    # --- Categorize unmatched items from Libro ---
-    libro_matched_ids = merged[merged['Matched']]['Libro_ID'].dropna().unique()
-    libro_unmatched = df_libro[~df_libro['Libro_ID'].isin(libro_matched_ids)].copy()
-    
+    libro_unmatched = get_unmatched(df_libro, 'Libro_ID', libro_matched_ids)
     libro_unmatched['Categoria'] = libro_unmatched.apply(
-        lambda row: categorize_difference(row, source='libro'),
-        axis=1
+        lambda row: categorize_difference(row, source='libro'), axis=1
     )
+
     
     # --- Get bank ending balance (last saldo in extracto) ---
     if 'Saldo' in df_extracto.columns:
@@ -411,13 +548,13 @@ def process_reconciliation(libro_file, extracto_file):
         '', '-', 'Cheques registrados de más', '', '', '', '', '', '', 0.00, running_balance, '', ''
     ])
     
-    # --- FINAL BALANCE ---
+    # --- SALDO DESTINO: Saldo Inicial del Libro Banco ---
     reconciliation_rows.append([
-        '', '', 'Saldo final Libro', '', '', '', '', '', '', '', running_balance, '', ''
+        '', '', 'Saldo inicial Libro Banco', '', '', '', '', '', '', '', running_balance, '', ''
     ])
     
     # --- Calculate summary ---
-    matched_count = merged['Matched'].sum()
+    matched_count = int(len(merged[merged['Matched']])) if 'Matched' in merged.columns and not merged.empty else 0
     temporal_diff = extracto_unmatched[extracto_unmatched['Categoria'].apply(lambda x: x.get('is_temporary', False))]['Monto_Banco'].sum() + \
                     libro_unmatched[libro_unmatched['Categoria'].apply(lambda x: x.get('is_temporary', False))]['Monto_Libro'].sum()
     permanente_diff = extracto_unmatched[extracto_unmatched['Categoria'].apply(lambda x: not x.get('is_temporary', True))]['Monto_Banco'].sum()
@@ -426,7 +563,10 @@ def process_reconciliation(libro_file, extracto_file):
         "saldo_final_banco": saldo_final_banco,
         "saldo_final_libro": saldo_final_libro,
         "diferencia_total": saldo_final_libro - saldo_final_banco,
-        "items_coinciden": int(matched_count),
+        "items_coinciden": matched_count,
+        "matches_cheque": len(merged[merged['Method'] == 'Cheque']) if not merged.empty and 'Method' in merged.columns else 0,
+        "matches_cuit": len(merged[merged['Method'] == 'Monto+CUIT+Fecha']) if not merged.empty and 'Method' in merged.columns else 0,
+        "matches_fuzzy": len(merged[merged['Method'] == 'Monto+Fecha']) if not merged.empty and 'Method' in merged.columns else 0,
         "diferencias_temporales_count": len(libro_unmatched[libro_unmatched['Categoria'].apply(lambda x: x.get('is_temporary', False))]) + 
                                        len(extracto_unmatched[extracto_unmatched['Categoria'].apply(lambda x: x.get('is_temporary', False))]),
         "diferencias_permanentes_count": len(extracto_unmatched[extracto_unmatched['Categoria'].apply(lambda x: not x.get('is_temporary', True))]),
@@ -707,7 +847,7 @@ def process_reconciliation(libro_file, extracto_file):
         # === SHEET 2: MATCHED ITEMS ===
         matched_items = merged[merged['Matched']].copy()
         if len(matched_items) > 0:
-            cols_matched = ['check_match_id', 'Fecha Pago ', 'Concepto', 'Monto_Libro', 
+            cols_matched = ['check_match_id', 'Method', 'Fecha Pago ', 'Concepto', 'Monto_Libro', 
                            'Fecha', 'Descripcion', 'Monto_Banco']
             cols_matched = [c for c in cols_matched if c in matched_items.columns]
             matched_items[cols_matched].to_excel(writer, sheet_name='Items Coincidentes', index=False)
@@ -746,12 +886,16 @@ def process_reconciliation(libro_file, extracto_file):
                 ws_matched.set_column(i, i, min(max_len, 50))
             
             
-            # Apply data format
-            for row in range(1, len(matched_items) + 1):
+            # Apply data format - use filtered dataframe
+            matched_filtered = matched_items[cols_matched]
+            for row in range(1, len(matched_filtered) + 1):
                 for col in range(len(cols_matched)):
-                    val = matched_items.iloc[row-1, col]
+                    val = matched_filtered.iloc[row-1, col]
+                    # Handle list values (convert to string) - check first to avoid isna errors
+                    if isinstance(val, (list, tuple)):
+                        ws_matched.write(row, col, ', '.join(str(v) for v in val), data_fmt)
                     # Handle NaN values
-                    if pd.isna(val):
+                    elif pd.isna(val):
                         ws_matched.write(row, col, '', data_fmt)
                     elif 'Monto' in cols_matched[col]:
                         ws_matched.write(row, col, val, money_fmt_small)
